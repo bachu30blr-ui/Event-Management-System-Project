@@ -1,0 +1,325 @@
+# filename: backend_fin.py
+
+import psycopg2
+import smtplib
+from email.mime.text import MIMEText
+
+# Database connection details
+DB_NAME = "Event Management System Project"
+DB_USER = "postgres"
+DB_PASS = "Tejaswi@2004"
+DB_HOST = "localhost"
+DB_PORT = "5432"
+
+# Email credentials
+EMAIL_USER = "your_email"
+EMAIL_PASS = "your_email_password"
+
+def get_db_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Database connection error: {e}")
+        return None
+
+def send_confirmation_email(recipient_email, event_name, attendee_name):
+    """Sends a confirmation email to the attendee."""
+    try:
+        msg = MIMEText(f"Hello {attendee_name},\n\nThank you for registering for the event: {event_name}. We look forward to seeing you there!\n\nBest regards,\nEvent Management Team")
+        msg['Subject'] = f"Confirmation for {event_name}"
+        msg['From'] = EMAIL_USER
+        msg['To'] = recipient_email
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, recipient_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        return False
+
+# ----------------- CRUD Operations: CREATE -----------------
+
+def create_user(name, email, organization):
+    """Creates a new user profile."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users (name, email, organization) VALUES (%s, %s, %s) RETURNING user_id;", (name, email, organization))
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            return user_id
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        return "User with this email already exists."
+    finally:
+        conn.close()
+
+def create_event(user_id, event_name, event_date, event_time, location, description):
+    """Creates a new event."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO events (user_id, event_name, event_date, event_time, location, description) VALUES (%s, %s, %s, %s, %s, %s) RETURNING event_id;", (user_id, event_name, event_date, event_time, location, description))
+            event_id = cur.fetchone()[0]
+            conn.commit()
+            return event_id
+    finally:
+        conn.close()
+
+def create_ticket(event_id, ticket_type, price, quantity_available):
+    """Creates a new ticket type for an event."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO tickets (event_id, ticket_type, price, quantity_available) VALUES (%s, %s, %s, %s);", (event_id, ticket_type, price, quantity_available))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def create_attendee(event_id, ticket_id, attendee_name, attendee_email, quantity_purchased):
+    """Registers a new attendee for an event and updates ticket quantity."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT quantity_available FROM tickets WHERE ticket_id = %s;", (ticket_id,))
+            current_quantity = cur.fetchone()[0]
+            if current_quantity >= quantity_purchased:
+                cur.execute("INSERT INTO attendees (event_id, ticket_id, attendee_name, attendee_email, quantity_purchased) VALUES (%s, %s, %s, %s, %s);", (event_id, ticket_id, attendee_name, attendee_email, quantity_purchased))
+                cur.execute("UPDATE tickets SET quantity_available = quantity_available - %s WHERE ticket_id = %s;", (quantity_purchased, ticket_id))
+                conn.commit()
+                return True
+            else:
+                return False
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: READ -----------------
+
+def get_user_by_email(email):
+    """Retrieves a user by their email."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE email = %s;", (email,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+def get_events_by_user(user_id):
+    """Retrieves all events for a specific user."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM events WHERE user_id = %s ORDER BY event_date DESC;", (user_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+def get_event_by_id(event_id):
+    """Retrieves a single event by its ID."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM events WHERE event_id = %s;", (event_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+def get_tickets_by_event(event_id):
+    """Retrieves all ticket types for a specific event."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM tickets WHERE event_id = %s;", (event_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+def get_attendees_by_event(event_id):
+    """Retrieves all attendees for a specific event."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    a.attendee_name,
+                    a.attendee_email,
+                    a.quantity_purchased,
+                    t.ticket_type,
+                    t.price
+                FROM
+                    attendees a
+                JOIN
+                    tickets t ON a.ticket_id = t.ticket_id
+                WHERE
+                    a.event_id = %s;
+            """, (event_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+def get_attendees_by_ticket_type(event_id, ticket_id):
+    """Retrieves attendees for a specific event and ticket type."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    attendee_name,
+                    attendee_email,
+                    quantity_purchased
+                FROM
+                    attendees
+                WHERE
+                    event_id = %s AND ticket_id = %s;
+            """, (event_id, ticket_id))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: UPDATE -----------------
+
+def update_user(user_id, name, organization):
+    """Updates a user's profile information."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET name = %s, organization = %s WHERE user_id = %s;", (name, organization, user_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def update_event(event_id, event_name, event_date, event_time, location, description):
+    """Updates an event's details."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE events SET event_name = %s, event_date = %s, event_time = %s, location = %s, description = %s WHERE event_id = %s;", (event_name, event_date, event_time, location, description, event_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def update_ticket_quantity(ticket_id, new_quantity):
+    """Updates the available quantity for a ticket."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tickets SET quantity_available = %s WHERE ticket_id = %s;", (new_quantity, ticket_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: DELETE -----------------
+
+def delete_event(event_id):
+    """Deletes an event and all associated tickets and attendees (due to CASCADE)."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE event_id = %s;", (event_id,))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def delete_attendee(attendee_id):
+    """Deletes an attendee from an event."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM attendees WHERE attendee_id = %s;", (attendee_id,))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+# ----------------- Business Insights -----------------
+
+def get_event_insights(event_id):
+    """Provides business insights for a single event."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            # Total tickets sold
+            cur.execute("SELECT SUM(quantity_purchased) FROM attendees WHERE event_id = %s;", (event_id,))
+            tickets_sold = cur.fetchone()[0] or 0
+
+            # Total revenue generated
+            cur.execute("""
+                SELECT SUM(a.quantity_purchased * t.price)
+                FROM attendees a
+                JOIN tickets t ON a.ticket_id = t.ticket_id
+                WHERE a.event_id = %s;
+            """, (event_id,))
+            total_revenue = cur.fetchone()[0] or 0.0
+
+            # Ticket types created
+            cur.execute("SELECT COUNT(*) FROM tickets WHERE event_id = %s;", (event_id,))
+            ticket_types_created = cur.fetchone()[0] or 0
+
+            # Avg ticket price sold
+            cur.execute("""
+                SELECT AVG(t.price)
+                FROM attendees a
+                JOIN tickets t ON a.ticket_id = t.ticket_id
+                WHERE a.event_id = %s;
+            """, (event_id,))
+            avg_price_sold = cur.fetchone()[0] or 0.0
+
+            # Max price ticket sold
+            cur.execute("""
+                SELECT MAX(t.price)
+                FROM attendees a
+                JOIN tickets t ON a.ticket_id = t.ticket_id
+                WHERE a.event_id = %s;
+            """, (event_id,))
+            max_price_sold = cur.fetchone()[0] or 0.0
+
+            # Min price ticket sold
+            cur.execute("""
+                SELECT MIN(t.price)
+                FROM attendees a
+                JOIN tickets t ON a.ticket_id = t.ticket_id
+                WHERE a.event_id = %s;
+            """, (event_id,))
+            min_price_sold = cur.fetchone()[0] or 0.0
+
+            return {
+                "tickets_sold": tickets_sold,
+                "total_revenue": total_revenue,
+                "ticket_types_created": ticket_types_created,
+                "avg_price_sold": avg_price_sold,
+                "max_price_sold": max_price_sold,
+                "min_price_sold": min_price_sold
+            }
+    finally:
+        conn.close()
