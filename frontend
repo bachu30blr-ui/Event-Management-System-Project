@@ -1,0 +1,181 @@
+import streamlit as st
+import backend as db
+import pandas as pd
+from datetime import datetime
+
+# --- Session State Management ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user' not in st.session_state:
+    st.session_state.user = None
+
+def login():
+    """Handles user login logic."""
+    st.title("Event Management System")
+    st.subheader("Login / Sign Up")
+    email = st.text_input("Enter your email")
+    if st.button("Login"):
+        user = db.get_user_by_email(email)
+        if user:
+            st.session_state.logged_in = True
+            st.session_state.user = user
+            st.success(f"Welcome back, {user[1]}!")
+            st.rerun()
+        else:
+            st.error("User not found. Please sign up.")
+    with st.expander("Sign Up"):
+        new_name = st.text_input("Full Name")
+        new_email = st.text_input("Email")
+        new_org = st.text_input("Organization (Optional)")
+        if st.button("Create Profile"):
+            user_id = db.create_user(new_name, new_email, new_org)
+            if user_id and isinstance(user_id, int):
+                st.success(f"Profile created successfully! Your User ID is {user_id}. You can now log in.")
+            else:
+                st.error(f"Error creating profile: {user_id}")
+
+def main_dashboard():
+    """The main dashboard for logged-in users."""
+    st.sidebar.title(f"Welcome, {st.session_state.user[1]}")
+    st.sidebar.button("Logout", on_click=lambda: st.session_state.clear() or st.experimental_rerun())
+
+    st.title("My Events Dashboard")
+    events = db.get_events_by_user(st.session_state.user[0])
+    
+    if not events:
+        st.info("You haven't created any events yet. Use the sidebar to create one!")
+    else:
+        df_events = pd.DataFrame(events, columns=["event_id", "user_id", "event_name", "event_date", "event_time", "location", "description"])
+        st.dataframe(df_events[['event_name', 'event_date', 'location']], use_container_width=True)
+
+    event_names = [e[2] for e in events]
+    selected_event_name = st.selectbox("Select an event to manage:", [""] + event_names)
+    
+    if selected_event_name:
+        selected_event = next((e for e in events if e[2] == selected_event_name), None)
+        event_id = selected_event[0]
+        st.subheader(f"Managing Event: {selected_event_name}")
+
+        tab1, tab2, tab3, tab4 = st.tabs(["Tickets", "Attendees", "Business Insights", "Update/Delete Event"])
+
+        with tab1:
+            st.subheader("Manage Tickets")
+            # READ Tickets
+            tickets = db.get_tickets_by_event(event_id)
+            if tickets:
+                df_tickets = pd.DataFrame(tickets, columns=["ticket_id", "event_id", "ticket_type", "price", "quantity_available"])
+                st.dataframe(df_tickets[['ticket_type', 'price', 'quantity_available']], use_container_width=True)
+            else:
+                st.info("No tickets created for this event yet.")
+            
+            # CREATE Ticket
+            with st.expander("Create New Ticket Type"):
+                with st.form("create_ticket_form"):
+                    ticket_type = st.text_input("Ticket Type (e.g., General, VIP)")
+                    price = st.number_input("Price", min_value=0.0, format="%.2f")
+                    quantity = st.number_input("Quantity Available", min_value=1, step=1)
+                    submitted = st.form_submit_button("Add Ticket")
+                    if submitted:
+                        if db.create_ticket(event_id, ticket_type, price, quantity):
+                            st.success("Ticket type added successfully!")
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to add ticket.")
+
+        with tab2:
+            st.subheader("Event Attendees")
+            # READ Attendees
+            attendees = db.get_attendees_by_event(event_id)
+            if attendees:
+                df_attendees = pd.DataFrame(attendees, columns=["Name", "Email", "Quantity Purchased", "Ticket Type", "Price"])
+                st.dataframe(df_attendees, use_container_width=True)
+            else:
+                st.info("No attendees registered yet.")
+
+            # CREATE Attendee
+            with st.expander("Register New Attendee"):
+                with st.form("register_attendee_form"):
+                    a_name = st.text_input("Attendee Name")
+                    a_email = st.text_input("Attendee Email")
+                    
+                    tickets_for_dropdown = db.get_tickets_by_event(event_id)
+                    ticket_options = {f"{t[2]} (${t[3]:.2f}) - {t[4]} available": t[0] for t in tickets_for_dropdown}
+                    selected_ticket_display = st.selectbox("Select Ticket Type:", list(ticket_options.keys()))
+                    
+                    if selected_ticket_display:
+                        ticket_id = ticket_options[selected_ticket_display]
+                        quantity_purchased = st.number_input("Quantity Purchased", min_value=1, step=1)
+                        submitted_attendee = st.form_submit_button("Register Attendee")
+                        if submitted_attendee:
+                            if db.create_attendee(event_id, ticket_id, a_name, a_email, quantity_purchased):
+                                st.success("Attendee registered successfully!")
+                                if db.send_confirmation_email(a_email, selected_event_name, a_name):
+                                    st.success("Confirmation email sent!")
+                                else:
+                                    st.warning("Attendee registered, but failed to send confirmation email.")
+                                st.experimental_rerun()
+                            else:
+                                st.error("Failed to register attendee. Not enough tickets available.")
+
+        with tab3:
+            st.subheader("Business Insights")
+            insights = db.get_event_insights(event_id)
+            if insights:
+                st.metric(label="Total Tickets Sold 🎟️", value=insights["tickets_sold"])
+                st.metric(label="Total Revenue Generated 💰", value=f"${insights['total_revenue']:.2f}")
+                st.metric(label="Number of Ticket Types 🎫", value=insights["ticket_types_created"])
+                st.metric(label="Average Ticket Price 💸", value=f"${insights['avg_price_sold']:.2f}")
+                st.metric(label="Highest Ticket Price 💎", value=f"${insights['max_price_sold']:.2f}")
+                st.metric(label="Lowest Ticket Price 🪙", value=f"${insights['min_price_sold']:.2f}")
+
+        with tab4:
+            st.subheader("Update Event Details")
+            # UPDATE Event
+            with st.form("update_event_form"):
+                new_event_name = st.text_input("Event Name", value=selected_event[2])
+                new_event_date = st.date_input("Event Date", value=selected_event[3])
+                new_event_time = st.time_input("Event Time", value=selected_event[4])
+                new_location = st.text_input("Location", value=selected_event[5])
+                new_description = st.text_area("Description", value=selected_event[6])
+                submitted_update = st.form_submit_button("Update Event")
+                if submitted_update:
+                    if db.update_event(event_id, new_event_name, new_event_date, new_event_time, new_location, new_description):
+                        st.success("Event updated successfully!")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to update event.")
+
+            st.subheader("Delete Event")
+            st.warning("🚨 Warning: Deleting an event is permanent and will remove all associated tickets and attendees.")
+            if st.button("Delete This Event", help="This action is irreversible."):
+                if db.delete_event(event_id):
+                    st.success("Event deleted successfully!")
+                    st.experimental_rerun()
+                else:
+                    st.error("Failed to delete event.")
+
+    st.sidebar.subheader("Create a New Event")
+    with st.sidebar.form("new_event_form"):
+        st.header("New Event")
+        event_name = st.text_input("Event Name*")
+        event_date = st.date_input("Event Date*")
+        event_time = st.time_input("Event Time*")
+        location = st.text_input("Location")
+        description = st.text_area("Description")
+        submitted_event = st.form_submit_button("Create Event")
+        
+        if submitted_event:
+            if event_name and event_date and event_time:
+                event_id = db.create_event(st.session_state.user[0], event_name, event_date, event_time, location, description)
+                if event_id:
+                    st.success(f"Event '{event_name}' created successfully! ID: {event_id}")
+                    st.experimental_rerun()
+                else:
+                    st.error("Failed to create event. Please check your inputs.")
+            else:
+                st.error("Please fill in all required fields (marked with *).")
+
+if st.session_state.logged_in:
+    main_dashboard()
+else:
+    login()
